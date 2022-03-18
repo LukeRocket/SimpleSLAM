@@ -57,8 +57,8 @@
 
 
 //#define VIDEO_PATH 0
-#define VIDEO_PATH "../src/190416_10_Drone1_01.mp4"
-
+//#define VIDEO_PATH "../src/190416_10_Drone1_01.mp4"
+#define VIDEO_PATH "../src/test.mp4"
 
 //#define FRAME_WIDTH 720
 //#define FRAME_HEIGHT 360
@@ -67,11 +67,20 @@
 
 
 void orbExtraction(cv::Ptr<cv::ORB> orb, cv::Mat frame, std::vector<cv::KeyPoint> &keypoints, cv::Mat &descriptors) {        
-    cv::Mat features = {};
-    cv::Mat grayFrame = {};
-    cv::cvtColor(frame, grayFrame, cv::COLOR_RGB2GRAY);
-    cv::goodFeaturesToTrack(grayFrame, features, 3000, 0.01, 3.0);
+    cv::Mat features = {};    
+    //cv::Mat meanFrame = cv::Mat::zeros(FRAME_HEIGHT, FRAME_WIDTH, CV_32F);
+    //cv::cvtColor(frame, meanFrame, cv::COLOR_RGB2GRAY);
     
+    int sizes[] = { FRAME_HEIGHT, FRAME_WIDTH};
+    typedef uint8_t Pixel;
+    cv::Mat meanFrame = cv::Mat::zeros(FRAME_HEIGHT, FRAME_WIDTH, CV_8UC1);
+    meanFrame.forEach<Pixel>([&](Pixel& pixel, const int position[]) -> void {
+        cv::Vec3b p = frame.at<cv::Vec3b>(position[0], position[1]);
+        pixel = (Pixel)(p[0] + p[1] + p[2]) * 0.3333;
+    });
+
+    cv::goodFeaturesToTrack(meanFrame, features, 1000, 0.01, 3);
+
     keypoints = {};
     
     for (int rIndex = 0; rIndex < features.rows; rIndex++) {
@@ -177,7 +186,7 @@ public:
 
 
             for (int colIter = 0; colIter < 3; colIter++) {
-                pointCol.push_back(cols[rIndex * 3]/255);
+                pointCol.push_back(cols[rIndex * 3] / 255);
                 pointCol.push_back(cols[rIndex * 3 + 1]/255);
                 pointCol.push_back(cols[rIndex * 3 + 2]/255);
             }            
@@ -478,6 +487,8 @@ int main()
 
     cv::Mat oldP;
     cv::Mat points3D = {};
+    std::vector<float> points3DColor = {};
+
     // normalized w.r.t. frame width (considered equal to 1)    
     std::vector<float> locationData = { -0.5f, -FRAME_HEIGHT / (float)(2 * FRAME_WIDTH) , 0.f, 1.f,
                                         -0.5f,  FRAME_HEIGHT / (float)(2 * FRAME_WIDTH) , 0.f, 1.f,
@@ -494,7 +505,7 @@ int main()
                 slam->detect(frame);                     
                 std::vector<cv::Mat> matchesPts = slam->getMatchesPoints();
                                              
-               /* if (!matchesPts[0].empty()) {                                        
+                if (!matchesPts[0].empty()) {                                        
                     slam->normalizeCoords(&matchesPts[0], camMatrix);
                     slam->normalizeCoords(&matchesPts[1], camMatrix);
 
@@ -509,11 +520,15 @@ int main()
                         
                         slam->denormalizeCoords(&matchesPts[1], camMatrix);
                         slam->denormalizeCoords(&matchesPts[0], camMatrix);
-                        pr->renderFrame(points3D, endLocationVertices, slam->getColors(frame, matchesPts[1]));
+                        
+                        std::vector<float> frameColor = slam->getColors(frame, matchesPts[1]);                        
+                        points3DColor.insert(points3DColor.end(), frameColor.begin(), frameColor.end());
+
+                        pr->renderFrame(points3D, endLocationVertices, points3DColor);
                     }                    
                     oldP = cameraProj.clone();
                 }
-                */
+                
                 cv::drawKeypoints(frame, slam->getKps(), frame, cv::Scalar(0, 255, 0));
                 for (int i = 0; i < matchesPts[0].rows; i++) {
                     cv::Point2f p1 = cv::Point2f(matchesPts[0].at<float>(i, 0), matchesPts[0].at<float>(i, 1));
@@ -539,6 +554,9 @@ int main()
     delete slam;
     delete matcher;    
     delete pr;
+    
+
+
     
     cap.release();
     cv::destroyAllWindows();
