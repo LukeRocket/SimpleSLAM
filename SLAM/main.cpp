@@ -68,9 +68,7 @@
 
 void orbExtraction(cv::Ptr<cv::ORB> orb, cv::Mat frame, std::vector<cv::KeyPoint> &keypoints, cv::Mat &descriptors) {        
     cv::Mat features = {};    
-    //cv::Mat meanFrame = cv::Mat::zeros(FRAME_HEIGHT, FRAME_WIDTH, CV_32F);
-    //cv::cvtColor(frame, meanFrame, cv::COLOR_RGB2GRAY);
-    
+    //cv::Mat meanFrame = cv::Mat::zeros(FRAME_HEIGHT, FRAME_WIDTH, CV_32F);   
     int sizes[] = { FRAME_HEIGHT, FRAME_WIDTH};
     typedef uint8_t Pixel;
     cv::Mat meanFrame = cv::Mat::zeros(FRAME_HEIGHT, FRAME_WIDTH, CV_8UC1);
@@ -79,7 +77,7 @@ void orbExtraction(cv::Ptr<cv::ORB> orb, cv::Mat frame, std::vector<cv::KeyPoint
         pixel = (Pixel)(p[0] + p[1] + p[2]) * 0.3333;
     });
 
-    cv::goodFeaturesToTrack(meanFrame, features, 1000, 0.01, 3);
+    cv::goodFeaturesToTrack(meanFrame, features, 3000, 0.01, 3);
 
     keypoints = {};
     
@@ -112,8 +110,8 @@ public:
         glEnable(GL_DEPTH_TEST);
 
         s_cam = new pangolin::OpenGlRenderState(
-            pangolin::ProjectionMatrix(width, height, 420, 420, width/2.f, height/2.f, 0.2, 100),
-            pangolin::ModelViewLookAt(0, 0, 1, 0, 0, 0, pangolin::AxisY)
+            pangolin::ProjectionMatrix(FRAME_WIDTH, FRAME_HEIGHT, 420, 420, FRAME_WIDTH/2.f, FRAME_HEIGHT/2.f, 0.2, 100000),
+            pangolin::ModelViewLookAt(0, 0, -1, 0, 0, 0, pangolin::AxisY)
         );
 
         handler  = new pangolin::Handler3D(*s_cam);       
@@ -127,15 +125,38 @@ public:
         delete handler;
     }
 
-    void renderFrame(cv::Mat cvPointsPositions, cv::Mat trianglesPositions,
+    void setCameraLocation(cv::Mat cameraCoords) {
+        std::vector<float> lookAtVertex = { 0,0,0 };
+        for (int i = 0; i < 4; i++) {
+            lookAtVertex[0] += cameraCoords.at<float>(i, 0) * 0.25f;
+            lookAtVertex[1] += cameraCoords.at<float>(i, 1) * 0.25f;
+            lookAtVertex[2] += cameraCoords.at<float>(i, 2) * 0.25f;
+        }
+
+        std::vector<float> cameraCenterLocation = { cameraCoords.at<float>(cameraCoords.rows - 1, 0),
+            cameraCoords.at<float>(cameraCoords.rows - 1, 1),
+            cameraCoords.at<float>(cameraCoords.rows - 1, 2) };                        
+
+
+        this->s_cam = new pangolin::OpenGlRenderState(
+            pangolin::ProjectionMatrix(FRAME_WIDTH, FRAME_HEIGHT, 420, 420, FRAME_WIDTH / 2.f, FRAME_HEIGHT / 2.f, 0.2, 10000),
+            pangolin::ModelViewLookAt(
+                cameraCenterLocation[0], -1 * cameraCenterLocation[1], cameraCenterLocation[2] - 50,
+                lookAtVertex[0], lookAtVertex[1], lookAtVertex[2], pangolin::AxisY)
+        );
+    }
+
+    void renderFrame(cv::Mat cvPointsPositions, std::vector<cv::Mat> KeyFramesPositions,
         std::vector<float> cols3DPoints = {}) {
         // Clear screen and activate view to render into
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         //glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); /// wireframe mode
+
+        this->setCameraLocation(KeyFramesPositions[KeyFramesPositions.size()-1]);        
         d_cam.Activate(*s_cam);                
                 
         // draw points
-        this->drawTriangles(trianglesPositions);
+        this->drawKeyFrames(KeyFramesPositions);
         this->draw3DPoints(cvPointsPositions, cols3DPoints);
         
         // Swap frames and Process Events
@@ -143,50 +164,55 @@ public:
         pangolin::FinishFrame();       
     }       
 
-    void drawTriangles(cv::Mat positions) {
-        std::vector<float> cols = {};
-        //  define points color if not already specified     
-        if (cols.size() == 0) {
-            for (int rIndex = 0; rIndex < positions.rows; rIndex++) {
-                cols.push_back(1.f);
-                cols.push_back(0.f);
-                cols.push_back(0.f);
+    void drawKeyFrames(std::vector<cv::Mat> positions) {
+                                        
+        for (cv::Mat p : positions) {
+            std::vector<float> cols = {};
+            //  define points color if not already specified     
+            if (cols.size() == 0) {
+                for (int rIndex = 0; rIndex < p.rows; rIndex++) {
+                    cols.push_back(1.f);
+                    cols.push_back(0.f);
+                    cols.push_back(0.f);
+                }
             }
-        }
 
-        std::vector<float> points = {};
-        for (int rIndex = 0; rIndex < positions.rows; rIndex++) {
-            points.push_back(positions.at<float>(rIndex, 0));
-            points.push_back(positions.at<float>(rIndex, 1));
-            points.push_back(positions.at<float>(rIndex, 2));
-        }
-        pangolin::glDrawColoredVertices<float, float>((int)points.size() / 3, points.data(), cols.data(), GL_TRIANGLE_FAN, 3, 3);
+            std::vector<float> points = {};
+            for (int rIndex = 0; rIndex < p.rows; rIndex++) {
+                points.push_back(p.at<float>(rIndex, 0));
+                points.push_back(p.at<float>(rIndex, 1));
+                points.push_back(p.at<float>(rIndex, 2));
+            }
+            pangolin::glDrawColoredVertices<float, float>((int)points.size() / 3, points.data(), cols.data(), GL_TRIANGLE_FAN, 3, 3);
+        }        
     }
 
     void draw3DPoints(cv::Mat cvPositions, std::vector<float> cols) {
         std::vector<float> point = {};
         std::vector<float> pointCol = {};
+        float squareDim = .1f;
+
 
         for (int rIndex = 0; rIndex < cvPositions.rows; rIndex++) {            
-            point.push_back(cvPositions.at<float>(rIndex, 0) - 0.01f);
-            point.push_back(cvPositions.at<float>(rIndex, 1) - 0.01f);
+            point.push_back(cvPositions.at<float>(rIndex, 0) - squareDim);
+            point.push_back(cvPositions.at<float>(rIndex, 1) - squareDim);
             point.push_back(cvPositions.at<float>(rIndex, 2));
 
-            point.push_back(cvPositions.at<float>(rIndex, 0) - 0.01f);
-            point.push_back(cvPositions.at<float>(rIndex, 1) + 0.01f);
+            point.push_back(cvPositions.at<float>(rIndex, 0) - squareDim);
+            point.push_back(cvPositions.at<float>(rIndex, 1) + squareDim);
             point.push_back(cvPositions.at<float>(rIndex, 2));
 
-            point.push_back(cvPositions.at<float>(rIndex, 0) + 0.01f);
-            point.push_back(cvPositions.at<float>(rIndex, 1) + 0.01f);
+            point.push_back(cvPositions.at<float>(rIndex, 0) + squareDim);
+            point.push_back(cvPositions.at<float>(rIndex, 1) + squareDim);
             point.push_back(cvPositions.at<float>(rIndex, 2));
             
-            point.push_back(cvPositions.at<float>(rIndex, 0) + 0.01f);
-            point.push_back(cvPositions.at<float>(rIndex, 1) - 0.01f);
+            point.push_back(cvPositions.at<float>(rIndex, 0) + squareDim);
+            point.push_back(cvPositions.at<float>(rIndex, 1) - squareDim);
             point.push_back(cvPositions.at<float>(rIndex, 2));
 
 
             for (int colIter = 0; colIter < 3; colIter++) {
-                pointCol.push_back(cols[rIndex * 3] / 255);
+                pointCol.push_back(cols[rIndex * 3]/255);
                 pointCol.push_back(cols[rIndex * 3 + 1]/255);
                 pointCol.push_back(cols[rIndex * 3 + 2]/255);
             }            
@@ -287,24 +313,23 @@ public:
         cv::Mat mask = {};
         
         
-        cv::Mat E = cv::findFundamentalMat(matchesPts[1], matchesPts[0], mask, cv::FM_RANSAC, (double).005f);
+        //cv::Mat E = cv::findFundamentalMat(matchesPts[1], matchesPts[0], mask, cv::FM_RANSAC, .1f);
 
-        //camMatrix.at<float>(0, 2) = 0;
-        //camMatrix.at<float>(1, 2) = 0;
-        //camMatrix.at<float>(1, 1) = 1;
-        //camMatrix.at<float>(0, 0) = 1;
+        camMatrix.at<float>(0, 2) = 0;
+        camMatrix.at<float>(1, 2) = 0;
+        camMatrix.at<float>(1, 1) = 1;
+        camMatrix.at<float>(0, 0) = 1;
         
-        //std::vector<cv::Point2f> coords = {};
-        //std::vector<cv::Point2f> coords1 = {};
+        std::vector<cv::Point2f> coords = {};
+        std::vector<cv::Point2f> coords1 = {};
 
-        //for (int rIndex = 0; rIndex < matchesPts[0].rows; rIndex++) {
-        //    coords.push_back(cv::Point2f(matchesPts[0].at<float>(rIndex, 0), matchesPts[0].at<float>(rIndex, 1)));
-        //    coords1.push_back(cv::Point2f(matchesPts[1].at<float>(rIndex, 0), matchesPts[1].at<float>(rIndex, 1)));
-        //}
+        /*for (int rIndex = 0; rIndex < matchesPts[0].rows; rIndex++) {
+            coords.push_back(cv::Point2f(matchesPts[0].at<float>(rIndex, 0), matchesPts[0].at<float>(rIndex, 1)));
+            coords1.push_back(cv::Point2f(matchesPts[1].at<float>(rIndex, 0), matchesPts[1].at<float>(rIndex, 1)));
+        }*/
 
-
-        //// prob | threshold | maxIters 
-        ////cv::Mat E = cv::findEssentialMat(matchesPts[0], matchesPts[1], camMatrix, cv::RANSAC, 0.99f, .005f, 200, mask);
+        // prob | threshold | maxIters 
+        cv::Mat E = cv::findEssentialMat(matchesPts[0].t(), matchesPts[1].t(), camMatrix, cv::RANSAC, 0.99f, 3.f, 200, mask);
         //cv::Mat E = cv::findEssentialMat(coords, coords1, camMatrix, cv::RANSAC, 0.99f, .005f, 200, mask);
         matchesPts[0].copyTo(matchesPts[0], mask);
         matchesPts[1].copyTo(matchesPts[1], mask);
@@ -319,12 +344,12 @@ public:
         cv::Mat R2 = {};
         cv::Mat t = {};
         cv::Mat cameraPoseMatrix;
+         
+        cv::recoverPose(E, matchesPts[0], matchesPts[1], camMatrix, R, t, mask);        
+        //cv::decomposeEssentialMat(E, R, R2, t);
 
-        //cv::recoverPose(E, matchesPts[0], matchesPts[1], camMatrix, R, t, mask);        
-        cv::decomposeEssentialMat(E, R, R2, t);
-
-        /*matchesPts[0].copyTo(matchesPts[0], mask);
-        matchesPts[1].copyTo(matchesPts[1], mask);*/
+        matchesPts[0].copyTo(matchesPts[0], mask);
+        matchesPts[1].copyTo(matchesPts[1], mask);
 
         cv::hconcat(R, t, cameraPoseMatrix);
         return cameraPoseMatrix;        
@@ -472,7 +497,7 @@ int main()
 
     int counter = 0;
     std::vector<float> mCollection = {};
-    float focalLenght = 200;
+    float focalLenght = 340;
     // define camera matrix
     cv::Mat camMatrix = cv::Mat::zeros(3, 3, CV_32F);
 
@@ -494,8 +519,8 @@ int main()
                                         -0.5f,  FRAME_HEIGHT / (float)(2 * FRAME_WIDTH) , 0.f, 1.f,
                                          0.5f,  FRAME_HEIGHT / (float)(2 * FRAME_WIDTH) , 0.f, 1.f,
                                          0.5f, -FRAME_HEIGHT / (float)(2 * FRAME_WIDTH), 0.f, 1.f,
-                                         0.f, 0.f, camMatrix.at<float>(0, 0)/(float)FRAME_WIDTH, 1.f};
-    cv::Mat startLocationVertices = cv::Mat(5, 4, CV_32F, locationData.data());
+                                         0.f, 0.f, camMatrix.at<float>(0, 0)/(float)FRAME_WIDTH, 1.f}; // camera center point
+    std::vector<cv::Mat> cameraLocations = { cv::Mat(5, 4, CV_32F, locationData.data()) };
 
     while (cap.isOpened()) {                    
         cap >> frame;                
@@ -510,7 +535,7 @@ int main()
                     slam->normalizeCoords(&matchesPts[1], camMatrix);
 
                     cv::Mat cameraPose = slam->getCameraPoseMatrix(camMatrix, matchesPts);
-                    cv::Mat endLocationVertices = slam->getCameraLocation(startLocationVertices, cameraPose);                    
+                    cameraLocations.push_back(slam->getCameraLocation(cameraLocations[cameraLocations.size()-1], cameraPose));
                     cv::Mat cameraProj = slam->getCameraProjectionMatrix(cameraPose, camMatrix);
                     if (oldP.empty() == false) {
                         cv::Mat pInFrame = slam->get3DPoints(matchesPts, oldP, cameraProj);
@@ -524,7 +549,7 @@ int main()
                         std::vector<float> frameColor = slam->getColors(frame, matchesPts[1]);                        
                         points3DColor.insert(points3DColor.end(), frameColor.begin(), frameColor.end());
 
-                        pr->renderFrame(points3D, endLocationVertices, points3DColor);
+                        pr->renderFrame(points3D, cameraLocations, points3DColor);                                                
                     }                    
                     oldP = cameraProj.clone();
                 }
