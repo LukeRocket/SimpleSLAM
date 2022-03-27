@@ -1,3 +1,6 @@
+
+
+
 /*
 * #################################
 * Author: Luca Sciarpa
@@ -52,7 +55,6 @@
 #include <Eigen/StdVector>
 
 #include <opencv2/core/eigen.hpp>
-
 #include <pangolin/gl/gl.h>
 
 
@@ -64,28 +66,24 @@
 //#define FRAME_HEIGHT 360
 #define FRAME_WIDTH (int)1920/2
 #define FRAME_HEIGHT (int)1080/2
+typedef uint8_t Pixel;
 
-
-void orbExtraction(cv::Ptr<cv::ORB> orb, cv::Mat frame, std::vector<cv::KeyPoint> &keypoints, cv::Mat &descriptors) {        
-    cv::Mat features = {};    
-    //cv::Mat meanFrame = cv::Mat::zeros(FRAME_HEIGHT, FRAME_WIDTH, CV_32F);   
-    int sizes[] = { FRAME_HEIGHT, FRAME_WIDTH};
-    typedef uint8_t Pixel;
+void orbExtraction(cv::Ptr<cv::ORB> orb, cv::Mat frame, std::vector<cv::KeyPoint> &keypoints, cv::Mat &descriptors) {                
     cv::Mat meanFrame = cv::Mat::zeros(FRAME_HEIGHT, FRAME_WIDTH, CV_8UC1);
     meanFrame.forEach<Pixel>([&](Pixel& pixel, const int position[]) -> void {
         cv::Vec3b p = frame.at<cv::Vec3b>(position[0], position[1]);
-        pixel = (Pixel)(p[0] + p[1] + p[2]) * 0.3333;
+        pixel = (Pixel)(p[0] + p[1] + p[2]);
     });
 
+    cv::Mat features;
     cv::goodFeaturesToTrack(meanFrame, features, 3000, 0.01, 3);
 
-    keypoints = {};
-    
+    keypoints = {};    
     for (int rIndex = 0; rIndex < features.rows; rIndex++) {
         keypoints.push_back(cv::KeyPoint(cv::Point2f(features.at<float>(rIndex, 0), features.at<float>(rIndex, 1)), 2));
     }
 
-    orb->compute(frame, keypoints, descriptors);   
+    orb->compute(frame, keypoints, descriptors);
 }
 
 float median(std::vector<float> vec) {    
@@ -125,7 +123,7 @@ public:
         delete handler;
     }
 
-    void setCameraLocation(cv::Mat cameraCoords) {
+    void setCameraLocation(cv::Mat cameraCoords, float distanceFromKf = 10.f) {
         std::vector<float> lookAtVertex = { 0,0,0 };
         for (int i = 0; i < 4; i++) {
             lookAtVertex[0] += cameraCoords.at<float>(i, 0) * 0.25f;
@@ -137,22 +135,30 @@ public:
             cameraCoords.at<float>(cameraCoords.rows - 1, 1),
             cameraCoords.at<float>(cameraCoords.rows - 1, 2) };                        
 
-
         this->s_cam = new pangolin::OpenGlRenderState(
             pangolin::ProjectionMatrix(FRAME_WIDTH, FRAME_HEIGHT, 420, 420, FRAME_WIDTH / 2.f, FRAME_HEIGHT / 2.f, 0.2, 10000),
             pangolin::ModelViewLookAt(
-                cameraCenterLocation[0], -1 * cameraCenterLocation[1], cameraCenterLocation[2] - 50,
+                //0,0,0,
+                cameraCenterLocation[0], cameraCenterLocation[1]+distanceFromKf, cameraCenterLocation[2]+distanceFromKf,
                 lookAtVertex[0], lookAtVertex[1], lookAtVertex[2], pangolin::AxisY)
         );
+
+
+        this->handler = new pangolin::Handler3D(*this->s_cam);
+        this->d_cam = pangolin::CreateDisplay()
+            .SetBounds(0.0, 1.0, 0.0, 1.0, -(float)this->width / (float)this->height)
+            .SetHandler(this->handler);
     }
 
-    void renderFrame(cv::Mat cvPointsPositions, std::vector<cv::Mat> KeyFramesPositions,
-        std::vector<float> cols3DPoints = {}) {
+    void renderFrame(cv::Mat cvPointsPositions, std::vector<cv::Mat> KeyFramesPositions, std::vector<float> cols3DPoints = {}) {
         // Clear screen and activate view to render into
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        //glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); /// wireframe mode
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); /// wireframe mode
 
-        this->setCameraLocation(KeyFramesPositions[KeyFramesPositions.size()-1]);        
+        if (KeyFramesPositions.empty() != true) {
+            this->setCameraLocation(KeyFramesPositions[KeyFramesPositions.size() - 1], 15.f);
+        }
+        
         d_cam.Activate(*s_cam);                
                 
         // draw points
@@ -163,7 +169,7 @@ public:
         pangolin::glDrawAxis(0.2f);
         pangolin::FinishFrame();       
     }       
-
+   
     void drawKeyFrames(std::vector<cv::Mat> positions) {
                                         
         for (cv::Mat p : positions) {
@@ -187,11 +193,9 @@ public:
         }        
     }
 
-    void draw3DPoints(cv::Mat cvPositions, std::vector<float> cols) {
+    void draw3DPoints(cv::Mat cvPositions, std::vector<float> cols, float squareDim = .1f ) {
         std::vector<float> point = {};
         std::vector<float> pointCol = {};
-        float squareDim = .1f;
-
 
         for (int rIndex = 0; rIndex < cvPositions.rows; rIndex++) {            
             point.push_back(cvPositions.at<float>(rIndex, 0) - squareDim);
@@ -212,7 +216,7 @@ public:
 
 
             for (int colIter = 0; colIter < 3; colIter++) {
-                pointCol.push_back(cols[rIndex * 3]/255);
+                pointCol.push_back(cols[rIndex * 3] / 255);
                 pointCol.push_back(cols[rIndex * 3 + 1]/255);
                 pointCol.push_back(cols[rIndex * 3 + 2]/255);
             }            
@@ -284,15 +288,16 @@ public:
         return this->newKps;
     }
 
-    void match(cv::Mat frame) {        
+    void match(cv::Mat frame) {                
+       
         if (!this->oldDescrs.empty()) {
             std::vector<std::vector<cv::DMatch>> matchesList = {};
                                        
             this->matches.clear();
             this->matcher->knnMatch(this->newDescrs, this->oldDescrs, matchesList, 2);
 
-            for (int i = 0; i < matchesList.size(); i++) {
-                if (matchesList[i][0].distance < 0.75 * matchesList[i][1].distance) {
+            for (int i = 0; i < matchesList.size(); i++) {                
+                if (matchesList[i][0].distance < 0.65f * matchesList[i][1].distance){
                   this->matches.push_back(matchesList[i][0]);                
                 }
             }            
@@ -308,50 +313,82 @@ public:
         }
     }
 
-    cv::Mat getCameraPoseMatrix(cv::Mat camMatrix, std::vector<cv::Mat> matchesPts = {}) {
+    std::array<cv::Mat, 3> singularValueDecomp(cv::Mat matrix) {
+        /*
+            Return array composed by:
+                0: SingularValueMat 
+                1: right eigenVectsMat
+                2: left eigenVectsMat
+        */
+        cv::Mat sigma = {};
+        cv::Mat u = {};
+        cv::Mat v = {};
 
-        cv::Mat mask = {};
-        
-        
-        //cv::Mat E = cv::findFundamentalMat(matchesPts[1], matchesPts[0], mask, cv::FM_RANSAC, .1f);
-
-        camMatrix.at<float>(0, 2) = 0;
-        camMatrix.at<float>(1, 2) = 0;
-        camMatrix.at<float>(1, 1) = 1;
-        camMatrix.at<float>(0, 0) = 1;
-        
-        std::vector<cv::Point2f> coords = {};
-        std::vector<cv::Point2f> coords1 = {};
-
-        /*for (int rIndex = 0; rIndex < matchesPts[0].rows; rIndex++) {
-            coords.push_back(cv::Point2f(matchesPts[0].at<float>(rIndex, 0), matchesPts[0].at<float>(rIndex, 1)));
-            coords1.push_back(cv::Point2f(matchesPts[1].at<float>(rIndex, 0), matchesPts[1].at<float>(rIndex, 1)));
-        }*/
-
-        // prob | threshold | maxIters 
-        cv::Mat E = cv::findEssentialMat(matchesPts[0].t(), matchesPts[1].t(), camMatrix, cv::RANSAC, 0.99f, 3.f, 200, mask);
-        //cv::Mat E = cv::findEssentialMat(coords, coords1, camMatrix, cv::RANSAC, 0.99f, .005f, 200, mask);
-        matchesPts[0].copyTo(matchesPts[0], mask);
-        matchesPts[1].copyTo(matchesPts[1], mask);
-
-        // svd of the Essential matrix 
-        Eigen::Matrix3f FEigen;
-        cv::cv2eigen(E, FEigen);
-        Eigen::JacobiSVD<Eigen::Matrix3f> svd(FEigen, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        Eigen::Matrix3f eigenMat;
+        cv::cv2eigen(matrix, eigenMat);
+        Eigen::JacobiSVD<Eigen::Matrix3f> svd(eigenMat, Eigen::ComputeFullU | Eigen::ComputeFullV);
         std::cout << svd.singularValues() << std::endl;
+        
+        std::cout << svd.singularValues()  << std::endl;
+        std::cout << svd.matrixU()  << std::endl;
+        std::cout << svd.matrixV()  << std::endl;
 
+        cv::eigen2cv(svd.singularValues(), sigma);        
+        cv::eigen2cv(svd.matrixU(), u);
+        cv::eigen2cv(svd.matrixV(), v);
+        
+        std::array<cv::Mat, 3> output = {sigma, u, v};
+        return output;
+    }
+
+    float estimateCameraFocalLength(cv::Mat F, std::vector<float> &focalLengths) {
+        /*
+            Estimate Focal length from successive estimations of the fundamental matrix
+            (Kruppa equations)         
+        */                     
+        std::array<cv::Mat, 3> decomp = this->singularValueDecomp(F);
+           
+        
+
+        return median(focalLengths);
+    }
+
+    void applyMaskToMatches(std::vector<cv::Mat> &matchesPts, cv::Mat mask) {
+
+        cv::Mat out1 = {};
+        cv::Mat out2 = {};
+
+        for (int rIndex = 0; rIndex < mask.rows; rIndex++) {
+            if (mask.at<uchar>(rIndex, 0) != 0) {
+                out1.push_back(matchesPts[0].at<cv::Point2f>(rIndex, 0));
+                out2.push_back(matchesPts[1].at<cv::Point2f>(rIndex, 0));
+            }
+        }
+        
+        /*matchesPts[0].copyTo(out1, mask);
+        matchesPts[1].copyTo(out2, mask);
+        */
+        matchesPts[0] = out1.clone();
+        matchesPts[1] = out2.clone();
+    }
+
+    cv::Mat getCameraPoseMatrix(cv::Mat camMatrix, std::vector<cv::Mat> &matchesPts) {        
+        cv::Mat mask;
+        cv::Mat E = cv::findEssentialMat(matchesPts[0].t(), matchesPts[1].t(), camMatrix, cv::RANSAC, 0.99f, 3.f, 1000, mask);
+
+        this->applyMaskToMatches(matchesPts, mask);
+        
         cv::Mat R = {};
-        cv::Mat R2 = {};
         cv::Mat t = {};
-        cv::Mat cameraPoseMatrix;
+        cv::Mat cameraPoseMatrix = {};
          
+        mask = {};        
         cv::recoverPose(E, matchesPts[0], matchesPts[1], camMatrix, R, t, mask);        
-        //cv::decomposeEssentialMat(E, R, R2, t);
 
-        matchesPts[0].copyTo(matchesPts[0], mask);
-        matchesPts[1].copyTo(matchesPts[1], mask);
+        this->applyMaskToMatches(matchesPts, mask);
 
-        cv::hconcat(R, t, cameraPoseMatrix);
+        cv::hconcat(R, t, cameraPoseMatrix);    
+        //cv::hconcat(R.t(), -R.t() * t, cameraPoseMatrix);
         return cameraPoseMatrix;        
     }
 
@@ -365,7 +402,7 @@ public:
         cv::Mat KInv = camMatrix.inv();
         std::vector<cv::Mat*> m = { points, &KInv };        
         standardizeMatricesType(m);
- 
+         
         *points = (KInv * points->t()).t();       
         
         cv::Mat finalPoints = {};
@@ -379,7 +416,7 @@ public:
         std::vector<cv::Mat*> m = { points, &camMatrix };
         standardizeMatricesType(m);
 
-        *points = (camMatrix * points->t()).t();
+        *points = (camMatrix * points->t()).t();        
 
         cv::Mat finalPoints = {};
         for (int rIndex = 0; rIndex < points->rows; rIndex++)
@@ -406,20 +443,35 @@ public:
 
 
         for (int rIndex = 0; rIndex < startLocations.rows; rIndex++) {            
-            /*endLocations.push_back((camMatrix * camPose * startLocations.row(rIndex).t()).t());*/
             endLocations.push_back((camPose * startLocations.row(rIndex).t()).t());
         }
+
         return endLocations;
     }   
+
+    cv::Mat getCurrentCameraTransform(cv::Mat newPose, cv::Mat oldPose) {
+        std::vector<float> lastRowData = { 0, 0, 0, 1 };
+        cv::Mat lastRow = cv::Mat(1, 4, CV_32F, lastRowData.data());
+        
+        newPose.convertTo(newPose, CV_32F);
+        cv::vconcat(newPose, lastRow, newPose);
+        oldPose.convertTo(oldPose, CV_32F);
+        cv::vconcat(oldPose, lastRow, oldPose);
+
+        cv::Mat cameraTransform = newPose * oldPose;        
+        return cameraTransform.rowRange(0, 3);
+    }
 
 
     cv::Mat dehomogenizedCoords(cv::Mat points3DHomog) {
         cv::Mat point3dDehomog = {};
-        if (points3DHomog.cols != 4)  return point3dDehomog;
+        
+        assert(points3DHomog.cols == 4);
+
         for (int rIndex = 0; rIndex < points3DHomog.rows; rIndex ++) {
             cv::Mat row = points3DHomog.row(rIndex);
             for (int cIndex = 0; cIndex < 3; cIndex++)
-                row.at<float>(0, cIndex) /= row.at<float>(0, 3);
+                row.at<float>(0, cIndex) /= -row.at<float>(0, 3);
             row(cv::Range(0, 1), cv::Range(0, 3)).copyTo(row);
             point3dDehomog.push_back(row);
         }
@@ -430,15 +482,15 @@ public:
        
         cv::Mat points3D = {};       
         cv::triangulatePoints(oldProjectMatrix, projectMatrix, matchesPts[0].t(), matchesPts[1].t(), points3D);
-        points3D = this->dehomogenizedCoords(points3D.t());
+       
+        /*this->homogCoords(&matchesPts[1]);
+        std::vector<cv::Mat*> matrices = { &projectMatrix, &matchesPts[1]};
+        standardizeMatricesType(matrices);        
         
-        return points3D;
+        cv::Mat points3D = projectMatrix.t() * matchesPts[1].t();        */
+        return this->dehomogenizedCoords(points3D.t());                
     }
-    
-    float estimateCameraFocalLenght(std::vector<float> v){    
-        return median(v);
-    }
-
+        
 
     Eigen::Vector3f getFundamentalMatrixSVD(std::vector<cv::Mat> matchesPts = {}) {               
         if(matchesPts[0].empty() == true)
@@ -497,94 +549,113 @@ int main()
 
     int counter = 0;
     std::vector<float> mCollection = {};
-    float focalLenght = 340;
+    float focalLenght = 270.f;
     // define camera matrix
     cv::Mat camMatrix = cv::Mat::zeros(3, 3, CV_32F);
 
     // set camera center 
-    camMatrix.at<float>(0, 2) += (int)(FRAME_WIDTH / 2);
-    camMatrix.at<float>(1, 2) += (int)(FRAME_HEIGHT / 2);
+    camMatrix.at<float>(0, 2) += FRAME_WIDTH / 2;
+    camMatrix.at<float>(1, 2) += FRAME_HEIGHT / 2;
 
     // set focal lenght
-    camMatrix.at<float>(0, 0) += (int)(focalLenght);
+    camMatrix.at<float>(0, 0) += focalLenght;
+    camMatrix.at<float>(1, 1) += focalLenght;
     camMatrix.at<float>(2, 2) += 1.f;   
-    camMatrix.at<float>(1, 1) += (int)(focalLenght);
 
-    cv::Mat oldP;
+    cv::Mat oldP = {};
+    cv::Mat cameraProj = {};
     cv::Mat points3D = {};
     std::vector<float> points3DColor = {};
 
     // normalized w.r.t. frame width (considered equal to 1)    
-    std::vector<float> locationData = { -0.5f, -FRAME_HEIGHT / (float)(2 * FRAME_WIDTH) , 0.f, 1.f,
-                                        -0.5f,  FRAME_HEIGHT / (float)(2 * FRAME_WIDTH) , 0.f, 1.f,
-                                         0.5f,  FRAME_HEIGHT / (float)(2 * FRAME_WIDTH) , 0.f, 1.f,
-                                         0.5f, -FRAME_HEIGHT / (float)(2 * FRAME_WIDTH), 0.f, 1.f,
-                                         0.f, 0.f, camMatrix.at<float>(0, 0)/(float)FRAME_WIDTH, 1.f}; // camera center point
+    std::vector<float> locationData = { -0.5f, 0.f, 0.f, 1.f,
+                                        -0.5f,  FRAME_HEIGHT / (float)(FRAME_WIDTH) , 0.f, 1.f,
+                                         0.5f,  FRAME_HEIGHT / (float)(FRAME_WIDTH) , 0.f, 1.f,
+                                         0.5f, 0.f, 0.f, 1.f,
+                                         0.f, FRAME_HEIGHT / (float)(2 * FRAME_WIDTH), camMatrix.at<float>(0, 0)/(float)FRAME_WIDTH, 1.f}; // camera center point
     std::vector<cv::Mat> cameraLocations = { cv::Mat(5, 4, CV_32F, locationData.data()) };
+
+    cv::Mat oldCameraPose = {};
+    cv::Mat newCameraTransform = {};
 
     while (cap.isOpened()) {                    
         cap >> frame;                
-        if (counter % 1 == 0) {
-            if (!frame.empty()) {
-                cv::resize(frame, frame, cv::Size(FRAME_WIDTH, FRAME_HEIGHT));
-                slam->detect(frame);                     
-                std::vector<cv::Mat> matchesPts = slam->getMatchesPoints();
+        if (!frame.empty() && counter % 2 == 0) {
+            cv::resize(frame, frame, cv::Size(FRAME_WIDTH, FRAME_HEIGHT));
+            // feature detection            
+            slam->detect(frame);                     
+            std::vector<cv::Mat> matchesPts = slam->getMatchesPoints();
                                              
-                if (!matchesPts[0].empty()) {                                        
-                    slam->normalizeCoords(&matchesPts[0], camMatrix);
-                    slam->normalizeCoords(&matchesPts[1], camMatrix);
-
-                    cv::Mat cameraPose = slam->getCameraPoseMatrix(camMatrix, matchesPts);
-                    cameraLocations.push_back(slam->getCameraLocation(cameraLocations[cameraLocations.size()-1], cameraPose));
-                    cv::Mat cameraProj = slam->getCameraProjectionMatrix(cameraPose, camMatrix);
-                    if (oldP.empty() == false) {
-                        cv::Mat pInFrame = slam->get3DPoints(matchesPts, oldP, cameraProj);
-                        for (int rIndex = 0; rIndex < 3; rIndex++) {
-                            points3D.push_back(pInFrame.row(rIndex));
-                        }
-                        
-                        slam->denormalizeCoords(&matchesPts[1], camMatrix);
-                        slam->denormalizeCoords(&matchesPts[0], camMatrix);
-                        
-                        std::vector<float> frameColor = slam->getColors(frame, matchesPts[1]);                        
-                        points3DColor.insert(points3DColor.end(), frameColor.begin(), frameColor.end());
-
-                        pr->renderFrame(points3D, cameraLocations, points3DColor);                                                
-                    }                    
-                    oldP = cameraProj.clone();
-                }
+            if (!matchesPts[0].empty()) {     // some match found                                                     
+                //slam->normalizeCoords(&matchesPts[0], camMatrix);
+                //slam->normalizeCoords(&matchesPts[1], camMatrix);
                 
-                cv::drawKeypoints(frame, slam->getKps(), frame, cv::Scalar(0, 255, 0));
-                for (int i = 0; i < matchesPts[0].rows; i++) {
-                    cv::Point2f p1 = cv::Point2f(matchesPts[0].at<float>(i, 0), matchesPts[0].at<float>(i, 1));
-                    cv::Point2f p2 = cv::Point2f(matchesPts[1].at<float>(i, 0), matchesPts[1].at<float>(i, 1));
-                    cv::line(frame,
-                        p1,
-                        p2,
-                        cv::Scalar(255, 0, 0), 1);
+                cv::Mat cameraPose = slam->getCameraPoseMatrix(camMatrix, matchesPts);
+                cv::Mat newCamLocation = slam->getCameraLocation(cameraLocations[cameraLocations.size() - 1], cameraPose);
+               
+                if (oldCameraPose.empty() == false) {
+                    cameraPose = slam->getCurrentCameraTransform(cameraPose, oldCameraPose);                        
                 }
+                oldCameraPose = cameraPose.clone();
 
-                cv::imshow("Frame", frame);
-                char c = (char)cv::waitKey(25);
-                if (c == 27)
-                    break;
+                cameraLocations.push_back(newCamLocation);
+                cameraProj = slam->getCameraProjectionMatrix(cameraPose, camMatrix);
+                    
+                if (oldP.empty() == false) {
+                    /*slam->normalizeCoords(&matchesPts[0], camMatrix);
+                    slam->normalizeCoords(&matchesPts[1], camMatrix);*/
+
+                    cv::Mat pInFrame = slam->get3DPoints(matchesPts, oldP, cameraProj);
+                    //cv::Mat pInFrame = slam->get3DPoints(matchesPts, oldP, cameraPose);
+
+                    for (int rIndex = 0; rIndex < pInFrame.rows; rIndex++) {
+                        points3D.push_back(pInFrame.row(rIndex));
+                    }
+
+                    /*slam->denormalizeCoords(&matchesPts[1], camMatrix);
+                    slam->denormalizeCoords(&matchesPts[0], camMatrix);*/
+                        
+                    std::vector<float> frameColor = slam->getColors(frame, matchesPts[1]);                        
+                    points3DColor.insert(points3DColor.end(), frameColor.begin(), frameColor.end());
+
+                    pr->renderFrame(points3D, cameraLocations, points3DColor);                                                
+                }                    
+                oldP = cameraProj.clone();
             }
-            else {
+                
+            cv::drawKeypoints(frame, slam->getKps(), frame, cv::Scalar(0, 255, 0));
+            for (int i = 0; i < matchesPts[0].rows; i++) {
+                cv::Point2f p1 = cv::Point2f(matchesPts[0].at<float>(i, 0), matchesPts[0].at<float>(i, 1));
+                cv::Point2f p2 = cv::Point2f(matchesPts[1].at<float>(i, 0), matchesPts[1].at<float>(i, 1));
+                cv::line(frame,
+                    p1,
+                    p2,
+                    cv::Scalar(255, 0, 0), 1);
+            }
+
+            cv::imshow("Frame", frame);
+            char c = (char)cv::waitKey(25);
+            if (c == 27)
                 break;
-            }
-        }
+        }       
         counter += 1;
-    }
+    }    
 
     delete slam;
     delete matcher;    
-    delete pr;
-    
-
-
-    
     cap.release();
     cv::destroyAllWindows();
+
+    while (true) {
+        char c = (char)cv::waitKey(25);
+        if (c == 27)
+            break;
+        pr->renderFrame(points3D, std::vector<cv::Mat>({}), points3DColor);
+    }
+
+    delete pr;
+        
+  
   
     return 0;
 }
